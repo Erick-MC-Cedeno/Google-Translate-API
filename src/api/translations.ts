@@ -29,11 +29,11 @@ interface TranslationResult {
   };
 }
 
-// Función para normalizar el texto (quita espacios de más)
+
 const normalizeText = (text: string): string =>
   text.trim().replace(/\s+/g, " ");
 
-// Genera una llave única para la caché en base a idioma origen, destino y texto
+
 const generateCacheKey = (sl: string, tl: string, text: string): string =>
   `${sl}-${tl}-${text}`;
 
@@ -45,20 +45,18 @@ const generateCacheKey = (sl: string, tl: string, text: string): string =>
 class TranslationCache {
   private cache = new Map<string, string>();
   private maxSize: number;
-
   constructor(maxSize: number) {
     this.maxSize = maxSize;
   }
-
   get(key: string): string | undefined {
     return this.cache.get(key);
   }
-
   set(key: string, value: string): void {
     if (this.cache.size >= this.maxSize) {
-      // Eliminar la entrada más antigua
       const firstKey = this.cache.keys().next().value;
-      this.cache.delete(firstKey);
+      if (firstKey !== undefined) {
+        this.cache.delete(firstKey);
+      }
     }
     this.cache.set(key, value);
   }
@@ -110,7 +108,6 @@ const splitTextIntoChunks = (text: string, maxChunkLength: number): string[] => 
       chunks.push(text.substring(currentIndex));
       break;
     }
-    // Buscar un espacio hacia atrás para no cortar una palabra
     let spaceIndex = text.lastIndexOf(" ", nextIndex);
     if (spaceIndex <= currentIndex) {
       spaceIndex = nextIndex;
@@ -153,7 +150,6 @@ const callTranslationAPI = async (
         (error.response?.status || 500) >= 500);
 
     if (isRetryable) {
-      // Espera incremental antes de reintentar
       await new Promise((resolve) =>
         setTimeout(resolve, RETRY_DELAY * (attempt + 1))
       );
@@ -179,12 +175,9 @@ export const translate = async (
   if (!cleanedText)
     throw new Error("El texto a traducir no puede estar vacío.");
 
-  // Si el texto es muy largo, lo dividimos en fragmentos
   if (cleanedText.length > MAX_CHUNK_LENGTH) {
     const chunks = splitTextIntoChunks(cleanedText, MAX_CHUNK_LENGTH);
-    // Se traducen los fragmentos en paralelo usando la función de traducción múltiple
     const translatedChunks = await translateMultiple(chunks, tl, sl);
-    // Se unen los fragmentos traducidos (se puede ajustar el separador según convenga)
     return translatedChunks.join(" ");
   }
 
@@ -193,7 +186,7 @@ export const translate = async (
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
-  // Llamada a la API para textos que no requieren división
+ 
   try {
     const data = await callTranslationAPI({
       q: cleanedText,
@@ -225,14 +218,10 @@ export const translateMultiple = async (
 ): Promise<string[]> => {
   if (!texts.length) return [];
 
-  // Inicializa un arreglo para los resultados finales
+  
   const finalTranslations: (string | null)[] = new Array(texts.length).fill(null);
-
-  // Arreglos para procesar en lote (textos cortos)
   const batchTexts: string[] = [];
   const batchIndices: number[] = [];
-
-  // Arreglo para solicitudes de textos largos
   const longTextPromises: Promise<void>[] = [];
 
   texts.forEach((text, index) => {
@@ -242,7 +231,6 @@ export const translateMultiple = async (
       return;
     }
 
-    // Si el texto es muy largo, se procesa individualmente (la función translate se encarga de dividirlo si es necesario)
     if (cleanedText.length > MAX_CHUNK_LENGTH) {
       longTextPromises.push(
         translate(tl, sl, cleanedText).then((result) => {
@@ -250,7 +238,6 @@ export const translateMultiple = async (
         })
       );
     } else {
-      // Para textos cortos se revisa la caché
       const cacheKey = generateCacheKey(sl, tl, cleanedText);
       const cached = cache.get(cacheKey);
       if (cached) {
@@ -286,10 +273,6 @@ export const translateMultiple = async (
       );
     }
   }
-
-  // Espera a que se completen las traducciones de textos largos
   await Promise.all(longTextPromises);
-
-  // Se garantiza que se devuelva un arreglo de cadenas
   return finalTranslations as string[];
 };
