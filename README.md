@@ -37,4 +37,4 @@ $ npm start
 
 ## Video
 
-[Demo Video](src/assets/screenshots/video.mp4)
+Puedes ver el video de demostración [aquí](src/assets/screenshots/video.mp4).
