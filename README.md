@@ -32,13 +32,13 @@ $ npm start
 ```
 
 
-# Screenshots  
+# Demo screensht and video 
 
 # UI
-![UI](frontend/src/assets/screenshots/UI.png)
+![UI](frontend/src/assets/screenshots/Ui.png)
 
 # DEMO Video  
-![Video](frontend/src/assets/screenshots/demov.mp4)
+![Video]()
 
 
 
