@@ -1,12 +1,9 @@
 # Google Translate API
 
-
 ## 🛠️ Technology Stack
 
 ![React](https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
-
-
 
 # Setup env node
 
@@ -32,11 +29,12 @@ $ npm install --force
 $ npm start
 ```
 
-
 # Demo Screenshot and Video
 
-## UI
-![ui](frontend/src/assets/screenshots/ui.png)
+## Screenshots
 
-## DEMO Video  
-![Video](forntend/src/assets/screenshots/video.mp4)
+![UI Screenshot](src/assets/screenshots/ui.png)
+
+## Video
+
+[![Demo Video](src/assets/screenshots/video-thumbnail.png)](src/assets/screenshots/video.mp4)
