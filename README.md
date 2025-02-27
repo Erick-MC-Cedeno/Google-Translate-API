@@ -29,6 +29,13 @@ $ npm install --force
 $ npm start
 ```
 
+# Run Build
+```
+$ npm run build
+$ npm install -g serve
+$ serve -s build
+```
+
 # Demo Screenshot and Video
 
 ## Screenshots
