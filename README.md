@@ -35,10 +35,11 @@ $ npm start
 # Demo screensht and video 
 
 # UI
-![UI](frontend/src/assets/screenshots/Ui.png)
+![ui](frontend/src/assets/screenshots/Ui.png)
 
 # DEMO Video  
 ![Video]()
 
 
-
+# UI
+![ui](frontend/src/assets/screenshots/Ui.png)
