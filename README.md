@@ -36,7 +36,7 @@ $ npm start
 # Demo Screenshot and Video
 
 ## UI
-![UI](frontend/src/assets/screenshots/ui.png)
+![ui](frontend/src/assets/screenshots/ui.png)
 
 ## DEMO Video  
 ![Video](forntend/src/assets/screenshots/video.mp4)
