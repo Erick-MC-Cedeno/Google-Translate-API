@@ -37,4 +37,4 @@ $ npm start
 
 ## Video
 
-[![Demo Video](src/assets/screenshots/video-thumbnail.png)](src/assets/screenshots/video.mp4)
+[Demo Video](src/assets/screenshots/video.mp4)
