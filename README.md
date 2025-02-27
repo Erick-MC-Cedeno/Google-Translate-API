@@ -1,6 +1,5 @@
 # Google Translate API
 
-# BlockVault  still in development
 
 ## 🛠️ Technology Stack
 
@@ -38,8 +37,7 @@ $ npm start
 ![ui](frontend/src/assets/screenshots/Ui.png)
 
 # DEMO Video  
-![Video]()
+![Video](frontend/src/assets/screenshots/)
 
 
-# UI
-![ui](frontend/src/assets/screenshots/Ui.png)
+
