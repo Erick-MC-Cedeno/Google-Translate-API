@@ -2,7 +2,7 @@ import React from "react";
 import { useSearchParams } from "react-router-dom";
 import { useSpeechSynthesis } from "react-speech-kit";
 import styled from "styled-components";
-import { translate } from "api/translations";
+import { translate } from "api/freetranslation";
 import SpeakerIcon from "assets/SpeakerIcon";
 import CopyIcon from "assets/CopyIcon";
 import PauseIcon from "assets/PauseIcon";
