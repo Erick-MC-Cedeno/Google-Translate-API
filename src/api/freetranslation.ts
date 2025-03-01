@@ -1,3 +1,13 @@
+// ============================
+// Webscraping solution free translation no need to configure the .env File of environment variables
+// you dont need a API key from Google Translate
+// this method implements a simple web scraping solution to translate text using Google Translate
+// this method is not recommended for large-scale applications, as it may violate Google's terms of service
+// this method is just for personal usage
+// ============================
+
+
+
 import axios from "axios";
 
 // ============================
