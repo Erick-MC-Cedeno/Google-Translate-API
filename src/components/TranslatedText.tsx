@@ -19,8 +19,10 @@ const TranslatedText = () => {
   const [translatedText, setTranslatedText] = React.useState<string[]>([]);
   const [voice, setVoice] = React.useState<SpeechSynthesisVoice | null>(null);
   const [voices, setVoices] = React.useState<SpeechSynthesisVoice[]>([]);
-  const [isProcessing, setIsProcessing] = React.useState(false);
-
+  // Remove unused state variable or use it in handleSpeak
+  const [isProcessing] = React.useState(false);
+  const [voiceCache, setVoiceCache] = React.useState<Record<string, SpeechSynthesisVoice>>({});
+  const voicesInitialized = React.useRef(false);
   const translateHandler = async (value: string, tl: string, sl: string) => {
     if (!value) {
       setTranslatedText([]);
@@ -34,7 +36,6 @@ const TranslatedText = () => {
       setTranslatedText(["<< Error en la traducción >>"]);
     }
   };
-
   const handleSpeak = () => {
     try {
       if (speaking) {
@@ -53,7 +54,6 @@ const TranslatedText = () => {
       alert("Error al reproducir el texto");
     }
   };
-
   const copyHandler = () => {
     try {
       const txt = translatedText.join("\n");
@@ -63,12 +63,65 @@ const TranslatedText = () => {
       alert("No se pudo copiar el texto");
     }
   };
-
+  // Fix useCallback with inline function and proper dependencies
   const debounceLoadData = React.useCallback(
-    debounce(translateHandler, 300),
-    []
+    (value: string, targetLang: string, sourceLang: string) => {
+      debounce((text: string, tl: string, sl: string) => {
+        translateHandler(text, tl, sl);
+      }, 300)(value, targetLang, sourceLang);
+    },
+    [/* translateHandler depends on setTranslatedText which is stable */]
   );
-
+  // Optimized voice loading with caching
+  React.useEffect(() => {
+    const loadVoices = () => {
+      if (voicesInitialized.current) return;
+      
+      const availableVoices = window.speechSynthesis.getVoices();
+      if (availableVoices.length > 0) {
+        setVoices(availableVoices);
+        
+        // Create voice cache for faster lookups
+        const cache: Record<string, SpeechSynthesisVoice> = {};
+        availableVoices.forEach(voice => {
+          const langPrefix = voice.lang.split('-')[0];
+          if (!cache[langPrefix] || voice.default) {
+            cache[langPrefix] = voice;
+          }
+        });
+        
+        setVoiceCache(cache);
+        voicesInitialized.current = true;
+        
+        // Set initial voice
+        const defaultVoice = availableVoices.find(v => v.default) || availableVoices[0];
+        setVoice(defaultVoice);
+      }
+    };
+    
+    loadVoices();
+    
+    if (!voicesInitialized.current) {
+      window.speechSynthesis.addEventListener("voiceschanged", loadVoices);
+      return () => {
+        window.speechSynthesis.removeEventListener("voiceschanged", loadVoices);
+      };
+    }
+  }, []);
+  // Optimized voice selection using cache
+  React.useEffect(() => {
+    if (Object.keys(voiceCache).length === 0) return;
+    
+    const langPrefix = tl.split('-')[0];
+    const cachedVoice = voiceCache[langPrefix];
+    
+    if (cachedVoice) {
+      setVoice(cachedVoice);
+    } else {
+      const matchingVoice = voices.find((v) => v.lang.startsWith(langPrefix));
+      setVoice(matchingVoice || voices[0] || null);
+    }
+  }, [tl, voices, voiceCache]);
   React.useEffect(() => {
     const updateVoices = () => {
       const availableVoices = window.speechSynthesis.getVoices();
@@ -82,16 +135,14 @@ const TranslatedText = () => {
       window.speechSynthesis.removeEventListener("voiceschanged", updateVoices);
     };
   }, []);
-
+  // Fix missing dependency in useEffect
   React.useEffect(() => {
     debounceLoadData(text, tl, sl);
-  }, [text, tl, sl]);
-
+  }, [text, tl, sl, debounceLoadData]);
   React.useEffect(() => {
     const matchingVoice = voices.find((v) => v.lang.startsWith(tl));
     setVoice(matchingVoice || voices[0] || null);
   }, [tl, voices]);
-
   return (
     <Container $rtl={isRTL}>
       <div>

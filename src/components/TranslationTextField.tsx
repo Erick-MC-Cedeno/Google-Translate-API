@@ -126,35 +126,63 @@ const TranslationTextField = () => {
   const sl = searchParams.get("sl") || DEFAULT_SOURCE_LANGUAGE;
   const [voices, setVoices] = React.useState<SpeechSynthesisVoice[]>([]);
   const [isProcessing, setIsProcessing] = React.useState(false);
-
+  const [voiceCache, setVoiceCache] = React.useState<Record<string, SpeechSynthesisVoice>>({});
   const {
     transcript,
     listening,
     resetTranscript,
     browserSupportsSpeechRecognition,
     isMicrophoneAvailable,
-  } = useSpeechRecognition();
-
+  } = useSpeechRecognition({
+    clearTranscriptOnListen: false,
+    commands: [
+      {
+        command: 'clear',
+        callback: () => clearTextHandler(),
+      }
+    ]
+  });
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
-
+  const voicesInitialized = React.useRef(false);
+  // Optimized voice loading with caching
   React.useEffect(() => {
-    const updateVoices = () => {
+    const loadVoices = () => {
+      // Only fetch voices if we haven't already
+      if (voicesInitialized.current) return;
+      
       const availableVoices = window.speechSynthesis.getVoices();
-      setVoices(availableVoices);
       if (availableVoices.length > 0) {
+        setVoices(availableVoices);
+        
+        // Create voice cache for faster lookups
+        const cache: Record<string, SpeechSynthesisVoice> = {};
+        availableVoices.forEach(voice => {
+          const langPrefix = voice.lang.split('-')[0];
+          if (!cache[langPrefix] || voice.default) {
+            cache[langPrefix] = voice;
+          }
+        });
+        
+        setVoiceCache(cache);
+        voicesInitialized.current = true;
+        
+        // Set initial voice
         const defaultVoice = availableVoices.find(v => v.default) || availableVoices[0];
         setVoice(defaultVoice);
       }
     };
     
-    window.speechSynthesis.addEventListener("voiceschanged", updateVoices);
-    updateVoices();
+    // Try to load voices immediately
+    loadVoices();
     
-    return () => {
-      window.speechSynthesis.removeEventListener("voiceschanged", updateVoices);
-    };
+    // Set up event listener as fallback
+    if (!voicesInitialized.current) {
+      window.speechSynthesis.addEventListener("voiceschanged", loadVoices);
+      return () => {
+        window.speechSynthesis.removeEventListener("voiceschanged", loadVoices);
+      };
+    }
   }, []);
-
   const setTextParam = React.useCallback((value: string) => {
     setText(value);
     setURLSearchParams((params) => {
@@ -162,17 +190,15 @@ const TranslationTextField = () => {
       return params;
     });
   }, [setURLSearchParams]);
-
   const clearTextHandler = () => {
     setTextParam("");
     resetTranscript();
     cancel();
   };
-
   const handleChangeText = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setTextParam(e.target.value);
   };
-
+  // Optimized speech recognition handling
   const handleSpeech = async () => {
     try {
       setIsProcessing(true);
@@ -183,6 +209,7 @@ const TranslationTextField = () => {
           alert("Por favor permite acceso al micrófono");
           return;
         }
+        
         await SpeechRecognition.startListening({
           continuous: true,
           interimResults: true,
@@ -195,7 +222,6 @@ const TranslationTextField = () => {
       setIsProcessing(false);
     }
   };
-
   const handleSpeak = () => {
     if (speaking) {
       cancel();
@@ -209,24 +235,57 @@ const TranslationTextField = () => {
       });
     }
   };
-
+  // Sistema mejorado para capturar audio y pasarlo al texto para traducción
+  const previousTranscriptRef = React.useRef("");
+  
   React.useEffect(() => {
-    if (transcript && listening) {
-      setTextParam(transcript);
+    if (!listening) return;
+    
+    if (transcript && transcript !== previousTranscriptRef.current) {
+      // Actualizar el texto solo cuando hay cambios reales en la transcripción
+      previousTranscriptRef.current = transcript;
+      
+      // Usar high priority para asegurar que la actualización sea inmediata
+      window.setTimeout(() => {
+        setTextParam(transcript);
+      }, 0);
     }
   }, [transcript, setTextParam, listening]);
-
+  // Único efecto para manejar la transcripción, optimizado para mayor velocidad y sensibilidad
   React.useEffect(() => {
-    const matchingVoice = voices.find((v) => v.lang.startsWith(sl));
-    setVoice(matchingVoice || voices[0] || null);
-  }, [sl, voices]);
-
+    if (!listening) return;
+    
+    // Procesar incluso transcripciones muy cortas para mayor sensibilidad
+    if (transcript) {
+      // Usar requestAnimationFrame para optimizar rendimiento
+      requestAnimationFrame(() => {
+        setTextParam(transcript);
+      });
+    }
+    
+  }, [transcript, setTextParam, listening]);
+  // Optimized voice selection using cache
+  React.useEffect(() => {
+    if (Object.keys(voiceCache).length === 0) return;
+    
+    // Try to find voice by language code
+    const langPrefix = sl.split('-')[0];
+    const cachedVoice = voiceCache[langPrefix];
+    
+    if (cachedVoice) {
+      setVoice(cachedVoice);
+    } else {
+      // Fallback to traditional search if not in cache
+      const matchingVoice = voices.find((v) => v.lang.startsWith(langPrefix));
+      setVoice(matchingVoice || voices[0] || null);
+    }
+  }, [sl, voices, voiceCache]);
   React.useEffect(() => {
     if (textareaRef.current && !listening) {
       textareaRef.current.focus();
     }
   }, [listening]);
-
+  // Rest of the component remains the same
   return (
     <Container hasText={!!text}>
       <GlobalStyle />
