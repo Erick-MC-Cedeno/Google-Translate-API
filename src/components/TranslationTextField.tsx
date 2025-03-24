@@ -17,11 +17,7 @@ const GlobalStyle = createGlobalStyle`
   }
 `;
 
-interface ContainerProps {
-  hasText: boolean;
-}
-
-const Container = styled.div<ContainerProps>`
+const Container = styled.div<{ $hasText: boolean }>`
   position: relative;
   height: auto;
 
@@ -54,7 +50,7 @@ const Container = styled.div<ContainerProps>`
   }
 
   .text-clear {
-    display: ${(props) => (props.hasText ? "block" : "none")};
+    display: ${(props) => (props.$hasText ? "block" : "none")};
     position: absolute;
     top: 16px;
     right: 16px;
@@ -144,6 +140,7 @@ const TranslationTextField = () => {
   });
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const voicesInitialized = React.useRef(false);
+
   // Optimized voice loading with caching
   React.useEffect(() => {
     const loadVoices = () => {
@@ -183,21 +180,30 @@ const TranslationTextField = () => {
       };
     }
   }, []);
+
   const setTextParam = React.useCallback((value: string) => {
-    setText(value);
+    const trimmedValue = value.trim() === "" ? "" : value;
+    setText(trimmedValue);
     setURLSearchParams((params) => {
-      params.set("text", value);
+      params.set("text", trimmedValue);
       return params;
     });
   }, [setURLSearchParams]);
-  const clearTextHandler = () => {
+
+  const clearTextHandler = async () => {
     setTextParam("");
     resetTranscript();
+    if (listening) {
+      await SpeechRecognition.stopListening();
+      SpeechRecognition.abortListening(); // Forzar el cese inmediato de la escucha
+    }
     cancel();
   };
+
   const handleChangeText = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setTextParam(e.target.value);
   };
+
   // Optimized speech recognition handling
   const handleSpeech = async () => {
     try {
@@ -209,7 +215,6 @@ const TranslationTextField = () => {
           alert("Por favor permite acceso al micrófono");
           return;
         }
-        
         await SpeechRecognition.startListening({
           continuous: true,
           interimResults: true,
@@ -222,6 +227,7 @@ const TranslationTextField = () => {
       setIsProcessing(false);
     }
   };
+
   const handleSpeak = () => {
     if (speaking) {
       cancel();
@@ -235,6 +241,7 @@ const TranslationTextField = () => {
       });
     }
   };
+
   // Sistema mejorado para capturar audio y pasarlo al texto para traducción
   const previousTranscriptRef = React.useRef("");
   
@@ -251,6 +258,7 @@ const TranslationTextField = () => {
       }, 0);
     }
   }, [transcript, setTextParam, listening]);
+
   // Único efecto para manejar la transcripción, optimizado para mayor velocidad y sensibilidad
   React.useEffect(() => {
     if (!listening) return;
@@ -264,6 +272,7 @@ const TranslationTextField = () => {
     }
     
   }, [transcript, setTextParam, listening]);
+
   // Optimized voice selection using cache
   React.useEffect(() => {
     if (Object.keys(voiceCache).length === 0) return;
@@ -280,14 +289,15 @@ const TranslationTextField = () => {
       setVoice(matchingVoice || voices[0] || null);
     }
   }, [sl, voices, voiceCache]);
+
   React.useEffect(() => {
     if (textareaRef.current && !listening) {
       textareaRef.current.focus();
     }
   }, [listening]);
-  // Rest of the component remains the same
+
   return (
-    <Container hasText={!!text}>
+    <Container $hasText={!!text}>
       <GlobalStyle />
       <div style={{ height: "100%" }}>
         <textarea

@@ -5,11 +5,8 @@ import axios from "axios";
 // ============================
 const API_URL = "https://translate.googleapis.com/translate_a/single";
 const TIMEOUT = 8000; // Tiempo máximo de espera en ms
-const MAX_CACHE_SIZE = 2000; // Aumentado para mejor rendimiento
 const RETRIES = 5; // Aumentado para mayor tolerancia a fallos
-const RETRY_DELAY = 500; // Aumentado para dar más tiempo entre reintentos
-const MAX_CONCURRENT_REQUESTS = 3; // Reducido para evitar bloqueos
-const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 horas en milisegundos
+const RETRY_DELAY = 500; // Tiempo inicial de espera entre reintentos en ms
 const MAX_TEXT_LENGTH = 5000; // Longitud máxima para cada solicitud
 
 // ===================
@@ -19,22 +16,11 @@ interface TranslationResult {
   data: any[];
 }
 
-interface CacheEntry {
-  value: string;
-  timestamp: number;
-}
-
 /**
  * Normaliza el texto eliminando espacios extras y recortando.
  */
 const normalizeText = (text: string): string =>
   text.trim().replace(/\s+/g, " ");
-
-/**
- * Crea una clave única para almacenar en caché en función de los idiomas y el texto.
- */
-const generateCacheKey = (sourceLang: string, targetLang: string, text: string): string =>
-  `${sourceLang}-${targetLang}-${text}`;
 
 /**
  * Divide un texto largo en fragmentos más pequeños para evitar límites de la API.
@@ -88,109 +74,6 @@ const splitText = (text: string, maxLength: number): string[] => {
 };
 
 // ===================
-// Implementación de caché con TTL
-// ===================
-class TranslationCache {
-  private cache = new Map<string, CacheEntry>();
-  private maxSize: number;
-  private ttl: number;
-
-  constructor(maxSize: number, ttl: number) {
-    this.maxSize = maxSize;
-    this.ttl = ttl;
-  }
-
-  get(key: string): string | undefined {
-    const entry = this.cache.get(key);
-    if (!entry) return undefined;
-    
-    // Verificar si la entrada ha expirado
-    if (Date.now() - entry.timestamp > this.ttl) {
-      this.cache.delete(key);
-      return undefined;
-    }
-    
-    return entry.value;
-  }
-
-  set(key: string, value: string): void {
-    // Limpiar entradas expiradas primero
-    this.cleanExpired();
-    
-    // Si aún estamos en el límite, eliminar la entrada más antigua
-    if (this.cache.size >= this.maxSize) {
-      const oldestKey = this.findOldestEntry();
-      if (oldestKey) {
-        this.cache.delete(oldestKey);
-      }
-    }
-    
-    this.cache.set(key, {
-      value,
-      timestamp: Date.now()
-    });
-  }
-  
-  private cleanExpired(): void {
-    const now = Date.now();
-    // Convert Map entries to array for compatibility
-    Array.from(this.cache.entries()).forEach(([key, entry]) => {
-      if (now - entry.timestamp > this.ttl) {
-        this.cache.delete(key);
-      }
-    });
-  }
-  
-  private findOldestEntry(): string | undefined {
-    let oldestKey: string | undefined;
-    let oldestTime = Infinity;
-    
-    // Convert Map entries to array and iterate
-    Array.from(this.cache.entries()).forEach(([key, entry]) => {
-      if (entry.timestamp < oldestTime) {
-        oldestTime = entry.timestamp;
-        oldestKey = key;
-      }
-    });
-    
-    return oldestKey;
-  }
-}
-
-const cache = new TranslationCache(MAX_CACHE_SIZE, CACHE_TTL);
-
-// ===================
-// Semáforo para limitar la concurrencia de solicitudes HTTP
-// ===================
-class Semaphore {
-  private tasks: Array<() => void> = [];
-  private count: number;
-
-  constructor(count: number) {
-    this.count = count;
-  }
-
-  async acquire(): Promise<void> {
-    if (this.count > 0) {
-      this.count--;
-      return;
-    }
-    await new Promise<void>((resolve) => this.tasks.push(resolve));
-  }
-
-  release(): void {
-    this.count++;
-    if (this.tasks.length > 0) {
-      this.count--;
-      const next = this.tasks.shift();
-      next && next();
-    }
-  }
-}
-
-const semaphore = new Semaphore(MAX_CONCURRENT_REQUESTS);
-
-// ===================
 // Rotación de Agentes (User-Agent) para evitar bloqueos
 // ===================
 class AgentRotator {
@@ -227,13 +110,12 @@ const callTranslationAPI = async (
   params: { source: string; target: string; q: string },
   attempt: number = 0
 ): Promise<TranslationResult> => {
-  await semaphore.acquire();
   try {
     // Se configura la cabecera "User-Agent" solo si NO estamos en el navegador.
     const headers: Record<string, string> = {};
     if (typeof window === "undefined") {
       headers["User-Agent"] = agentRotator.getNextAgent();
-      // Añadir cabeceras adicionales para simular un navegador real
+      // Cabeceras adicionales para simular un navegador real
       headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8";
       headers["Accept-Language"] = "en-US,en;q=0.5";
       headers["Connection"] = "keep-alive";
@@ -254,7 +136,7 @@ const callTranslationAPI = async (
     return response;
   } catch (error) {
     if (attempt >= RETRIES) throw error;
-
+    
     const isRetryable =
       axios.isAxiosError(error) &&
       (error.code === "ECONNABORTED" ||
@@ -264,7 +146,7 @@ const callTranslationAPI = async (
     if (isRetryable) {
       // Backoff exponencial: cada reintento espera más tiempo
       const backoffTime = RETRY_DELAY * Math.pow(2, attempt);
-      const jitter = Math.random() * 300; // Añadir aleatoriedad para evitar sincronización
+      const jitter = Math.random() * 300; // Aleatoriedad para evitar sincronización
       
       await new Promise((resolve) =>
         setTimeout(resolve, backoffTime + jitter)
@@ -272,15 +154,13 @@ const callTranslationAPI = async (
       return callTranslationAPI(params, attempt + 1);
     }
     throw error;
-  } finally {
-    semaphore.release();
   }
 };
 
 /**
  * Procesa la respuesta de la API de traducción y extrae el texto traducido
  */
-const processTranslationResponse = (response: TranslationResult, cacheKey: string): string => {
+const processTranslationResponse = (response: TranslationResult): string => {
   if (!response?.data || !Array.isArray(response.data) || response.data.length < 1) {
     throw new Error("Respuesta de API inválida");
   }
@@ -300,9 +180,7 @@ const processTranslationResponse = (response: TranslationResult, cacheKey: strin
     throw new Error("No se encontró traducción");
   }
 
-  const translatedText = translatedParts.join(' ');
-  cache.set(cacheKey, translatedText);
-  return translatedText;
+  return translatedParts.join(' ');
 };
 
 // ===================
@@ -311,15 +189,12 @@ const processTranslationResponse = (response: TranslationResult, cacheKey: strin
 export const translate = async (
   targetLang: string,
   sourceLang: string,
-  text: string
+  text: string,
+  options?: { signal?: AbortSignal }
 ): Promise<string> => {
   const cleanedText = normalizeText(text);
   if (!cleanedText)
     throw new Error("El texto a traducir no puede estar vacío.");
-
-  const cacheKey = generateCacheKey(sourceLang, targetLang, cleanedText);
-  const cached = cache.get(cacheKey);
-  if (cached) return cached;
 
   try {
     // Si el texto es demasiado largo, dividirlo y traducir por partes
@@ -327,25 +202,17 @@ export const translate = async (
       const chunks = splitText(cleanedText, MAX_TEXT_LENGTH);
       const translatedChunks = await Promise.all(
         chunks.map(async (chunk) => {
-          // Verificar si este fragmento ya está en caché
-          const chunkCacheKey = generateCacheKey(sourceLang, targetLang, chunk);
-          const cachedChunk = cache.get(chunkCacheKey);
-          if (cachedChunk) return cachedChunk;
-          
-          // Traducir el fragmento
           const response = await callTranslationAPI({
             q: chunk,
             source: sourceLang,
             target: targetLang,
           });
           
-          return processTranslationResponse(response, chunkCacheKey);
+          return processTranslationResponse(response);
         })
       );
       
-      const completeTranslation = translatedChunks.join(' ');
-      cache.set(cacheKey, completeTranslation);
-      return completeTranslation;
+      return translatedChunks.join(' ');
     }
     
     // Para textos cortos, traducir directamente
@@ -355,7 +222,7 @@ export const translate = async (
       target: targetLang,
     });
     
-    return processTranslationResponse(response, cacheKey);
+    return processTranslationResponse(response);
   } catch (error) {
     throw new Error(`Error en traducción: ${(error as Error).message}`);
   }
