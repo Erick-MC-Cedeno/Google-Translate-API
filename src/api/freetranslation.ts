@@ -172,7 +172,7 @@ const processTranslationResponse = (response: TranslationResult): string => {
   const translatedParts: string[] = [];
   for (const sentence of mainTranslationData) {
     if (Array.isArray(sentence) && sentence.length > 0 && typeof sentence[0] === 'string') {
-      translatedParts.push(sentence[0]);
+      translatedParts.push(decodeHtmlEntities(sentence[0]));
     }
   }
 
@@ -180,7 +180,20 @@ const processTranslationResponse = (response: TranslationResult): string => {
     throw new Error("No se encontró traducción");
   }
 
-  return translatedParts.join(' ');
+  // Unir fragmentos y limpiar espacios antes de signos de puntuación
+  const joined = translatedParts.join(' ');
+  return joined.replace(/\s+([.,!?;:])/g, '$1').trim();
+};
+
+// Decodifica entidades HTML comunes que puede devolver la API
+const decodeHtmlEntities = (str: string): string => {
+  if (!str) return str;
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
 };
 
 // ===================
@@ -196,18 +209,28 @@ export const translate = async (
   if (!cleanedText)
     throw new Error("El texto a traducir no puede estar vacío.");
 
+  // Si se solicita detección automática, intentar detectar primero con la misma API gratuita
+  let effectiveSource = sourceLang;
+  if (sourceLang === 'auto' || sourceLang === 'auto-detect') {
+    try {
+      effectiveSource = await detectLanguage(cleanedText);
+    } catch (e) {
+      effectiveSource = 'auto';
+    }
+  }
+
   try {
     // Si el texto es demasiado largo, dividirlo y traducir por partes
     if (cleanedText.length > MAX_TEXT_LENGTH) {
       const chunks = splitText(cleanedText, MAX_TEXT_LENGTH);
-      const translatedChunks = await Promise.all(
+        const translatedChunks = await Promise.all(
         chunks.map(async (chunk) => {
           const response = await callTranslationAPI({
             q: chunk,
-            source: sourceLang,
+            source: effectiveSource,
             target: targetLang,
           });
-          
+
           return processTranslationResponse(response);
         })
       );
@@ -218,10 +241,10 @@ export const translate = async (
     // Para textos cortos, traducir directamente
     const response = await callTranslationAPI({
       q: cleanedText,
-      source: sourceLang,
+      source: effectiveSource,
       target: targetLang,
     });
-    
+
     return processTranslationResponse(response);
   } catch (error) {
     throw new Error(`Error en traducción: ${(error as Error).message}`);

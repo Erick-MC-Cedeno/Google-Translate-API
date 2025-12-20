@@ -37,10 +37,12 @@ const TranslatedText = () => {
       });
       
       if (translated) {
+        // Preservar mayúsculas y formato de la API, sólo recortar líneas vacías
         const normalizedText = translated
           .split("\n")
-          .map(line => line.charAt(0).toUpperCase() + line.slice(1).toLowerCase());
-        setTranslatedText(normalizedText);
+          .map(line => line.trim())
+          .filter(line => line.length > 0);
+        setTranslatedText(normalizedText.length ? normalizedText : [translated.trim()]);
       }
     } catch (error) {
       if (!(error instanceof DOMException)) { // Ignore abort errors

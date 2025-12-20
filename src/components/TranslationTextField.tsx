@@ -122,6 +122,15 @@ const TranslationTextField = () => {
   const sl = searchParams.get("sl") || DEFAULT_SOURCE_LANGUAGE;
   const [voices, setVoices] = React.useState<SpeechSynthesisVoice[]>([]);
   const [isProcessing, setIsProcessing] = React.useState(false);
+  const [devices, setDevices] = React.useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = React.useState<string | null>(null);
+  const audioContextRef = React.useRef<AudioContext | null>(null);
+  const mediaStreamRef = React.useRef<MediaStream | null>(null);
+  const analyserRef = React.useRef<AnalyserNode | null>(null);
+  const vadIntervalRef = React.useRef<number | null>(null);
+  const silenceTimerRef = React.useRef<number | null>(null);
+    const activeFramesRef = React.useRef<number>(0);
+    const silentFramesRef = React.useRef<number>(0);
   const [voiceCache, setVoiceCache] = React.useState<Record<string, SpeechSynthesisVoice>>({});
   const {
     transcript,
@@ -140,6 +149,14 @@ const TranslationTextField = () => {
   });
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const voicesInitialized = React.useRef(false);
+
+  // VAD (Voice Activity Detection) settings
+  // Ajusta `volumeThreshold` para cambiar sensibilidad (mayor => menos sensible)
+  const volumeThreshold = 0.03; // Ajustable: sensibilidad para detectar voz
+  const vadCheckInterval = 100; // ms entre comprobaciones de VAD
+  const activeHoldCount = 2; // número de frames consecutivos por encima del umbral para considerar actividad
+  const silenceHoldCount = 5; // número de frames consecutivos por debajo del umbral para considerar silencio
+  const silenceTimeout = 1000; // ms de silencio adicional (no usado para el conteo principal)
 
   // Optimized voice loading with caching
   React.useEffect(() => {
@@ -181,11 +198,33 @@ const TranslationTextField = () => {
     }
   }, []);
 
+  // Solicitar permiso y listar dispositivos al inicio
+  React.useEffect(() => {
+    const initDevices = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(t => t.stop());
+        const list = await navigator.mediaDevices.enumerateDevices();
+        const inputs = list.filter(d => d.kind === 'audioinput');
+        setDevices(inputs);
+        if (inputs.length > 0 && !selectedDeviceId) setSelectedDeviceId(inputs[0].deviceId);
+      } catch (err) {
+        console.warn('No se pudo acceder a dispositivos de audio', err);
+      }
+    };
+
+    initDevices();
+  }, []);
+
   const setTextParam = React.useCallback((value: string) => {
     const trimmedValue = value.trim() === "" ? "" : value;
     setText(trimmedValue);
     setURLSearchParams((params) => {
-      params.set("text", trimmedValue);
+      if (trimmedValue === "") {
+        params.delete("text");
+      } else {
+        params.set("text", trimmedValue);
+      }
       return params;
     });
   }, [setURLSearchParams]);
@@ -198,6 +237,7 @@ const TranslationTextField = () => {
       SpeechRecognition.abortListening(); // Forzar el cese inmediato de la escucha
     }
     cancel();
+    await cleanupAudioProcessing();
   };
 
   const handleChangeText = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -210,11 +250,15 @@ const TranslationTextField = () => {
       setIsProcessing(true);
       if (listening) {
         await SpeechRecognition.stopListening();
+        await cleanupAudioProcessing();
       } else {
         if (!isMicrophoneAvailable) {
           alert("Por favor permite acceso al micrófono");
           return;
         }
+        // Inicializar procesamiento de audio con constraints y VAD
+        await setupAudioProcessing(selectedDeviceId);
+
         await SpeechRecognition.startListening({
           continuous: true,
           interimResults: true,
@@ -226,6 +270,112 @@ const TranslationTextField = () => {
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  // Inicializa WebAudio con constraints para mejorar la captura
+  const setupAudioProcessing = async (deviceId: string | null) => {
+    try {
+      // Si ya existe un stream, limpiarlo
+      await cleanupAudioProcessing();
+
+      const constraints: MediaStreamConstraints = {
+        audio: {
+          deviceId: deviceId ? { exact: deviceId } : undefined,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      mediaStreamRef.current = stream;
+
+      const AudioContextClass = (window as any).AudioContext || (window as any).webkitAudioContext;
+      const audioCtx = new AudioContextClass();
+      audioContextRef.current = audioCtx;
+
+      const source = audioCtx.createMediaStreamSource(stream);
+      const compressor = audioCtx.createDynamicsCompressor();
+      const gain = audioCtx.createGain();
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 2048;
+
+      // Conectar: source -> compressor -> gain -> analyser (no conectar a destino)
+      source.connect(compressor);
+      compressor.connect(gain);
+      gain.connect(analyser);
+
+      analyserRef.current = analyser;
+
+      // Iniciar VAD simple
+      startVAD();
+    } catch (err) {
+      console.error('No se pudo inicializar audio:', err);
+    }
+  };
+
+  const cleanupAudioProcessing = async () => {
+    try {
+      if (vadIntervalRef.current) {
+        window.clearInterval(vadIntervalRef.current);
+        vadIntervalRef.current = null;
+      }
+
+      // Reset VAD counters
+      activeFramesRef.current = 0;
+      silentFramesRef.current = 0;
+
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach(t => t.stop());
+        mediaStreamRef.current = null;
+      }
+
+      if (audioContextRef.current) {
+        try { await audioContextRef.current.close(); } catch(e){}
+        audioContextRef.current = null;
+      }
+
+      analyserRef.current = null;
+    } catch (err) {
+      console.warn('Error during cleanupAudioProcessing', err);
+    }
+  };
+
+  const startVAD = () => {
+    if (!analyserRef.current) return;
+    const analyser = analyserRef.current;
+    const data = new Uint8Array(analyser.fftSize);
+
+    // Comprobar nivel RMS en intervalos regulares y usar conteo de frames
+    vadIntervalRef.current = window.setInterval(() => {
+      analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128;
+        sum += v * v;
+      }
+      const rms = Math.sqrt(sum / data.length);
+      // Mantener conteo de frames activos/silenciosos para evitar disparos por transitorios
+      if (rms > volumeThreshold) {
+        activeFramesRef.current += 1;
+        silentFramesRef.current = 0;
+
+        if (activeFramesRef.current >= activeHoldCount) {
+          if (!listening) {
+            SpeechRecognition.startListening({ continuous: true, interimResults: true, language: sl }).catch(()=>{});
+          }
+        }
+      } else {
+        silentFramesRef.current += 1;
+        activeFramesRef.current = 0;
+
+        if (silentFramesRef.current >= silenceHoldCount) {
+          if (listening) {
+            SpeechRecognition.stopListening().catch(()=>{});
+          }
+        }
+      }
+    }, vadCheckInterval);
   };
 
   const handleSpeak = () => {
@@ -314,6 +464,28 @@ const TranslationTextField = () => {
             <CloseIcon />
           </button>
         )}
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+        <label style={{ color: '#bbb', fontSize: 12 }}>Entrada:</label>
+        <select
+          value={selectedDeviceId || ''}
+          onChange={(e) => setSelectedDeviceId(e.target.value || null)}
+          aria-label="Seleccionar dispositivo de entrada"
+        >
+          {devices.length === 0 && <option value="">Predeterminado</option>}
+          {devices.map(d => (
+            <option key={d.deviceId} value={d.deviceId}>{d.label || d.deviceId}</option>
+          ))}
+        </select>
+        <button onClick={async () => {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            stream.getTracks().forEach(t => t.stop());
+            const list = await navigator.mediaDevices.enumerateDevices();
+            const inputs = list.filter(d => d.kind === 'audioinput');
+            setDevices(inputs);
+          } catch (err) { console.warn(err); }
+        }} style={{ background: 'none', border: 'none', color: '#bbb', cursor: 'pointer' }} aria-label="Refrescar dispositivos">↻</button>
       </div>
       <Actions>
         {browserSupportsSpeechRecognition ? (

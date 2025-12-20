@@ -82,7 +82,7 @@ const LanguagesBar = () => {
         onChange={handleChangeSourceLang}
         options={languageOptions as unknown as { value: string; label: string }[]}
         aria-label="Seleccionar idioma origen"
-        dropdownMatchSelectWidth={false}
+        popupMatchSelectWidth={false}
       />
       
       <SwitchButton 
@@ -97,7 +97,7 @@ const LanguagesBar = () => {
         onChange={handleChangeTargetLang}
         options={languageOptions as unknown as { value: string; label: string }[]}
         aria-label="Seleccionar idioma destino"
-        dropdownMatchSelectWidth={false}
+        popupMatchSelectWidth={false}
       />
     </Container>
   );
