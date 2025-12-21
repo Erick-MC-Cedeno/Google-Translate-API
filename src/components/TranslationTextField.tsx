@@ -109,7 +109,7 @@ const Actions = styled.div`
     width: 100%;
     height: 100%;
     border-radius: 50%;
-    border: 2px solid #ff4444;
+    border: 2px solid rgba(255,255,255,0.14);
     animation: pulse 1s infinite;
   }
 `;
@@ -151,6 +151,8 @@ const TranslationTextField = () => {
   });
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const voicesInitialized = React.useRef(false);
+  const manualEditRef = React.useRef<boolean>(false);
+  const manualEditTimeoutRef = React.useRef<number | null>(null);
 
   // VAD (Voice Activity Detection) settings
   // Mejor sensibilidad: suavizado RMS, estimación de ruido y umbral adaptativo
@@ -245,7 +247,23 @@ const TranslationTextField = () => {
   };
 
   const handleChangeText = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    // Marcar edición manual para evitar que la VAD/transcripción la sobrescriba inmediatamente
+    if (manualEditTimeoutRef.current) {
+      window.clearTimeout(manualEditTimeoutRef.current);
+      manualEditTimeoutRef.current = null;
+    }
+    manualEditRef.current = true;
+    manualEditTimeoutRef.current = window.setTimeout(() => {
+      manualEditRef.current = false;
+      manualEditTimeoutRef.current = null;
+    }, 700);
+
     setTextParam(e.target.value);
+
+    // Si el usuario borró todo el texto, también limpiar la transcripción
+    if (e.target.value.trim() === "") {
+      resetTranscript();
+    }
   };
 
   // Optimized speech recognition handling
@@ -426,7 +444,9 @@ const TranslationTextField = () => {
   
   React.useEffect(() => {
     if (!listening) return;
-    
+    // Si el usuario editó manualmente recientemente, no sobrescribimos
+    if (manualEditRef.current) return;
+
     if (transcript && transcript !== previousTranscriptRef.current) {
       // Actualizar el texto solo cuando hay cambios reales en la transcripción
       previousTranscriptRef.current = transcript;
@@ -441,7 +461,9 @@ const TranslationTextField = () => {
   // Único efecto para manejar la transcripción, optimizado para mayor velocidad y sensibilidad
   React.useEffect(() => {
     if (!listening) return;
-    
+    // Evitar sobrescribir si el usuario editó manualmente hace poco
+    if (manualEditRef.current) return;
+
     // Procesar incluso transcripciones muy cortas para mayor sensibilidad
     if (transcript) {
       // Usar requestAnimationFrame para optimizar rendimiento
@@ -523,16 +545,7 @@ const TranslationTextField = () => {
             disabled={!isMicrophoneAvailable || isProcessing}
             aria-label={listening ? "Detener reconocimiento" : "Iniciar reconocimiento"}
           >
-            {listening && <div className="pulse-indicator" />}
-            {listening ? (
-              <div style={{ position: 'relative', color: '#ff4444' }}>
-                <PauseIcon />
-              </div>
-            ) : (
-              <div style={{ color: isMicrophoneAvailable ? '#4CAF50' : '#ff4444' }}>
-                <MicIcon />
-              </div>
-            )}
+            {listening ? <PauseIcon /> : <MicIcon />}
           </button>
         ) : (
           <p>Reconocimiento de voz no soportado</p>
@@ -544,11 +557,7 @@ const TranslationTextField = () => {
             disabled={isProcessing}
             aria-label={speaking ? "Detener narración" : "Reproducir texto"}
           >
-            {speaking ? (
-              <div style={{ color: '#ff4444' }}><PauseIcon /></div>
-            ) : (
-              <div style={{ color: '#4CAF50' }}><SpeakerIcon /></div>
-            )}
+            {speaking ? <PauseIcon /> : <SpeakerIcon />}
           </button>
         )}
         
