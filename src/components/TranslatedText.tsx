@@ -52,22 +52,6 @@ const TranslatedText = () => {
     }
   };
 
-  React.useEffect(() => {
-    currentTextRef.current = text;
-    if (!text) {
-      setTranslatedText([]);
-      return;
-    }
-    debouncedTranslateHandler(text, tl, sl);
-    
-    return () => {
-      debouncedTranslateHandler.cancel();
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-    };
-  }, [text, tl, sl]);
-
   const copyHandler = () => {
     try {
       const txt = translatedText.join("\n");
@@ -87,16 +71,28 @@ const TranslatedText = () => {
     []
   );
 
-  // Actualizar la traducción cuando cambie el texto o los idiomas
+  // Actualizar la traducción cuando cambie el texto o los idiomas.
+  // Usamos un único useEffect para evitar llamadas duplicadas y
+  // asegurarnos de cancelar traducciones pendientes al borrar el texto.
   React.useEffect(() => {
+    currentTextRef.current = text;
+
     if (!text) {
+      debouncedTranslateHandler.cancel();
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
       setTranslatedText([]);
       return;
     }
+
     debouncedTranslateHandler(text, tl, sl);
-    // Cancelar llamadas debounced pendientes al desmontar o antes de ejecutar de nuevo
+
     return () => {
       debouncedTranslateHandler.cancel();
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
   }, [text, tl, sl, debouncedTranslateHandler]);
 
