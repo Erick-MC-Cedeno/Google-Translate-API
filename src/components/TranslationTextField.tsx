@@ -131,6 +131,8 @@ const TranslationTextField = () => {
   const silenceTimerRef = React.useRef<number | null>(null);
     const activeFramesRef = React.useRef<number>(0);
     const silentFramesRef = React.useRef<number>(0);
+  const rmsSmoothRef = React.useRef<number>(0);
+  const noiseFloorRef = React.useRef<number>(1);
   const [voiceCache, setVoiceCache] = React.useState<Record<string, SpeechSynthesisVoice>>({});
   const {
     transcript,
@@ -151,12 +153,14 @@ const TranslationTextField = () => {
   const voicesInitialized = React.useRef(false);
 
   // VAD (Voice Activity Detection) settings
-  // Ajusta `volumeThreshold` para cambiar sensibilidad (mayor => menos sensible)
-  const volumeThreshold = 0.03; // Ajustable: sensibilidad para detectar voz
-  const vadCheckInterval = 100; // ms entre comprobaciones de VAD
-  const activeHoldCount = 2; // número de frames consecutivos por encima del umbral para considerar actividad
-  const silenceHoldCount = 5; // número de frames consecutivos por debajo del umbral para considerar silencio
+  // Mejor sensibilidad: suavizado RMS, estimación de ruido y umbral adaptativo
+  const baseVolumeThreshold = 0.03; // valor mínimo absoluto para evitar demasiada sensibilidad
+  const vadCheckInterval = 75; // ms entre comprobaciones de VAD (más responsivo)
+  const activeHoldCount = 3; // frames consecutivos por encima del umbral para confirmar voz
+  const silenceHoldCount = 6; // frames consecutivos por debajo del umbral para confirmar silencio
   const silenceTimeout = 1000; // ms de silencio adicional (no usado para el conteo principal)
+  const rmsSmoothingAlpha = 0.15; // coeficiente EMA para suavizado del RMS
+  const adaptiveMultiplier = 3.5; // multiplicador sobre el ruido de fondo para formar el umbral adaptativo
 
   // Optimized voice loading with caching
   React.useEffect(() => {
@@ -344,19 +348,44 @@ const TranslationTextField = () => {
   const startVAD = () => {
     if (!analyserRef.current) return;
     const analyser = analyserRef.current;
-    const data = new Uint8Array(analyser.fftSize);
 
-    // Comprobar nivel RMS en intervalos regulares y usar conteo de frames
+    // Buffer para lectura de float (más precisión si está disponible)
+    const floatData = new Float32Array(analyser.fftSize);
+
+    // Comprobar nivel RMS en intervalos regulares y usar conteo de frames con suavizado y umbral adaptativo
     vadIntervalRef.current = window.setInterval(() => {
-      analyser.getByteTimeDomainData(data);
+      // Preferir getFloatTimeDomainData si existe para mayor precisión
+      if ((analyser as any).getFloatTimeDomainData) {
+        (analyser as any).getFloatTimeDomainData(floatData);
+      } else {
+        const byteData = new Uint8Array(analyser.fftSize);
+        analyser.getByteTimeDomainData(byteData);
+        for (let i = 0; i < byteData.length; i++) {
+          floatData[i] = (byteData[i] - 128) / 128;
+        }
+      }
+
       let sum = 0;
-      for (let i = 0; i < data.length; i++) {
-        const v = (data[i] - 128) / 128;
+      for (let i = 0; i < floatData.length; i++) {
+        const v = floatData[i];
         sum += v * v;
       }
-      const rms = Math.sqrt(sum / data.length);
+      const rms = Math.sqrt(sum / floatData.length);
+
+      // Suavizado exponencial del RMS para evitar picos
+      const prevSmooth = rmsSmoothRef.current || 0;
+      const smooth = rmsSmoothingAlpha * rms + (1 - rmsSmoothingAlpha) * prevSmooth;
+      rmsSmoothRef.current = smooth;
+
+      // Mantener estimación del ruido de fondo (mínimo adaptativo con ligero decaimiento hacia arriba)
+      noiseFloorRef.current = Math.min(noiseFloorRef.current, smooth);
+      // Decaimiento lento hacia arriba para permitir adaptación al ruido que sube
+      noiseFloorRef.current = Math.max(noiseFloorRef.current, noiseFloorRef.current * 1.0005);
+
+      const adaptiveThreshold = Math.max(baseVolumeThreshold, noiseFloorRef.current * adaptiveMultiplier + 0.005);
+
       // Mantener conteo de frames activos/silenciosos para evitar disparos por transitorios
-      if (rms > volumeThreshold) {
+      if (smooth > adaptiveThreshold) {
         activeFramesRef.current += 1;
         silentFramesRef.current = 0;
 
