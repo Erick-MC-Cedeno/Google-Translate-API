@@ -40,9 +40,16 @@ self.addEventListener('fetch', (event) => {
             return response;
           }
           const responseClone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseClone);
-          });
+          try {
+            const reqUrl = new URL(event.request.url);
+            if (reqUrl.protocol === 'http:' || reqUrl.protocol === 'https:') {
+              caches.open(CACHE_NAME).then((cache) => {
+                cache.put(event.request, responseClone);
+              });
+            }
+          } catch (e) {
+            // If URL parsing fails or unsupported scheme, skip caching
+          }
           return response;
         })
         .catch(() => cached);
