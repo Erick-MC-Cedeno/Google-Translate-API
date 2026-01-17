@@ -133,6 +133,7 @@ const TranslationTextField = () => {
     const silentFramesRef = React.useRef<number>(0);
   const rmsSmoothRef = React.useRef<number>(0);
   const noiseFloorRef = React.useRef<number>(1);
+  const fftDataRef = React.useRef<Uint8Array | null>(null);
   const [voiceCache, setVoiceCache] = React.useState<Record<string, SpeechSynthesisVoice>>({});
   const {
     transcript,
@@ -154,15 +155,21 @@ const TranslationTextField = () => {
   const manualEditRef = React.useRef<boolean>(false);
   const manualEditTimeoutRef = React.useRef<number | null>(null);
 
-  // VAD (Voice Activity Detection) settings
-  // Mejor sensibilidad: suavizado RMS, estimación de ruido y umbral adaptativo
-  const baseVolumeThreshold = 0.03; // valor mínimo absoluto para evitar demasiada sensibilidad
-  const vadCheckInterval = 75; // ms entre comprobaciones de VAD (más responsivo)
-  const activeHoldCount = 3; // frames consecutivos por encima del umbral para confirmar voz
-  const silenceHoldCount = 6; // frames consecutivos por debajo del umbral para confirmar silencio
-  const silenceTimeout = 1000; // ms de silencio adicional (no usado para el conteo principal)
-  const rmsSmoothingAlpha = 0.15; // coeficiente EMA para suavizado del RMS
-  const adaptiveMultiplier = 3.5; // multiplicador sobre el ruido de fondo para formar el umbral adaptativo
+  // VAD (Voice Activity Detection) settings - OPTIMIZED FOR VOICE IN MUSIC & NOISE REJECTION
+  // Detección: voces en canciones, susurros, gritos | Ignora: viento, respiración, ruido blanco
+  const baseVolumeThreshold = 0.01; // umbral bajo para detectar voces rápidamente
+  const vadCheckInterval = 25; // ms entre comprobaciones de VAD (detección más rápida)
+  const activeHoldCount = 1; // frames consecutivos para activación más rápida
+  const silenceHoldCount = 2; // frames consecutivos para detección de silencio más rápida
+  const silenceTimeout = 800; // ms de silencio adicional (más rápido)
+  const rmsSmoothingAlpha = 0.30; // coeficiente EMA mejorado para respuesta más rápida
+  const adaptiveMultiplier = 2.0; // umbral adaptativo más sensible
+  const peakVoiceThreshold = 0.45; // umbral directo más bajo para detectar voces
+  const spectralCentroidThreshold = 1200; // Hz - rango reducido para detección más rápida
+  const formantRatioThreshold = 0.30; // ratio más bajo para mejor sensibilidad
+  const spectralFlatnessThreshold = 0.45; // umbral relajado para mayor sensibilidad
+  const zeroCrossingThreshold = 0.18; // umbral relajado para mejor respuesta
+  const windNoiseThreshold = 35; // energía baja en medios/altos = viento/respiración
 
   // Optimized voice loading with caching
   React.useEffect(() => {
@@ -343,6 +350,12 @@ const TranslationTextField = () => {
         vadIntervalRef.current = null;
       }
 
+      // Limpiar timeout de silencio
+      if (silenceTimerRef.current) {
+        window.clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = null;
+      }
+
       // Reset VAD counters
       activeFramesRef.current = 0;
       silentFramesRef.current = 0;
@@ -369,19 +382,89 @@ const TranslationTextField = () => {
 
     // Buffer para lectura de float (más precisión si está disponible)
     const floatData = new Float32Array(analyser.fftSize);
+    const fftData = new Uint8Array(analyser.frequencyBinCount);
+    fftDataRef.current = fftData;
 
-    // Comprobar nivel RMS en intervalos regulares y usar conteo de frames con suavizado y umbral adaptativo
+    // Comprobar nivel RMS en intervalos regulares con análisis espectral para voces en música
     vadIntervalRef.current = window.setInterval(() => {
-      // Preferir getFloatTimeDomainData si existe para mayor precisión
-      if ((analyser as any).getFloatTimeDomainData) {
-        (analyser as any).getFloatTimeDomainData(floatData);
-      } else {
-        const byteData = new Uint8Array(analyser.fftSize);
-        analyser.getByteTimeDomainData(byteData);
-        for (let i = 0; i < byteData.length; i++) {
-          floatData[i] = (byteData[i] - 128) / 128;
+      // Usar getByteTimeDomainData (más rápido que getFloatTimeDomainData)
+      const byteData = new Uint8Array(analyser.fftSize);
+      analyser.getByteTimeDomainData(byteData);
+      for (let i = 0; i < byteData.length; i++) {
+        floatData[i] = (byteData[i] - 128) / 128;
+      }
+
+      // Análisis FFT para detección de espectro (voces vs música/ruido)
+      analyser.getByteFrequencyData(fftData);
+
+      // Calcular energía en rangos de frecuencia específicos para voz humana
+      const nyquist = analyser.context.sampleRate / 2;
+      const binWidth = nyquist / fftData.length;
+      
+      // Rango bajo (60-250Hz) - fundamentales de voz
+      const lowBinStart = Math.floor(60 / binWidth);
+      const lowBinEnd = Math.floor(250 / binWidth);
+      let lowEnergy = 0;
+      for (let i = lowBinStart; i < lowBinEnd; i++) {
+        lowEnergy += fftData[i];
+      }
+      lowEnergy /= (lowBinEnd - lowBinStart + 1);
+
+      // Rango medio (250-2000Hz) - formantes principales de voz
+      const midBinStart = lowBinEnd;
+      const midBinEnd = Math.floor(2000 / binWidth);
+      let midEnergy = 0;
+      for (let i = midBinStart; i < midBinEnd; i++) {
+        midEnergy += fftData[i];
+      }
+      midEnergy /= (midBinEnd - midBinStart + 1);
+
+      // Rango alto (2000-4000Hz) - armónicos de voz
+      const highBinStart = midBinEnd;
+      const highBinEnd = Math.floor(4000 / binWidth);
+      let highEnergy = 0;
+      for (let i = highBinStart; i < highBinEnd; i++) {
+        highEnergy += fftData[i];
+      }
+      highEnergy /= (highBinEnd - highBinStart + 1);
+
+      // Calcular ratios espectrales característicos de voz
+      const formantRatio = (midEnergy + highEnergy) / (lowEnergy + midEnergy + 0.001);
+      const voiceSignature = midEnergy > lowEnergy * 0.7; // Voces tienen más energía media que baja
+
+      // Calcular centroide espectral y flatness en un solo pass
+      let numerator = 0;
+      let denominator = 0;
+      let geometricProduct = 1;
+      for (let i = highBinStart; i < highBinEnd; i++) { // Solo en rango de voz
+        const frequency = (i * nyquist) / fftData.length;
+        numerator += frequency * fftData[i];
+        denominator += fftData[i];
+        if (fftData[i] > 0) geometricProduct *= Math.pow(fftData[i], 1 / (highBinEnd - highBinStart + 1));
+      }
+      const spectralCentroid = denominator > 0 ? numerator / denominator : 0;
+      const isSpectralInVoiceRange = spectralCentroid > spectralCentroidThreshold * 0.6; // 900Hz mínimo
+
+      // Calcular spectral flatness (Wiener entropy) - rechaza viento y ruido plano
+      // Voces: < 0.4 (con formantes) | Viento/Ruido: > 0.6 (espectro plano)
+      const arithmeticMean = denominator / (highBinEnd - highBinStart + 1) || 1e-10;
+      const spectralFlatness = Math.max(0, Math.min(1, geometricProduct / (arithmeticMean + 1e-10)));
+      const isNotWindNoise = spectralFlatness < spectralFlatnessThreshold; // rechaza espectro plano
+
+      // Calcular Zero Crossing Rate (ZCR) - detecta ruido vs voz estructurada
+      // Ruido: ZCR alto | Voz: ZCR bajo y consistente
+      let zeroCrossings = 0;
+      for (let i = 1; i < floatData.length; i++) {
+        if ((floatData[i] > 0 && floatData[i - 1] <= 0) || (floatData[i] <= 0 && floatData[i - 1] > 0)) {
+          zeroCrossings++;
         }
       }
+      const zcr = zeroCrossings / floatData.length;
+      const isNotVoiceNoise = zcr < zeroCrossingThreshold; // rechaza ruido aleatorio (respiración)
+
+      // Detectar viento/respiración: energía muy baja en rangos de voz
+      const voiceEnergyRatio = (midEnergy + highEnergy) / (lowEnergy + 1e-6);
+      const isNotWindRespiration = voiceEnergyRatio > windNoiseThreshold * 0.01; // energía en rangos de voz
 
       let sum = 0;
       for (let i = 0; i < floatData.length; i++) {
@@ -396,16 +479,33 @@ const TranslationTextField = () => {
       rmsSmoothRef.current = smooth;
 
       // Mantener estimación del ruido de fondo (mínimo adaptativo con ligero decaimiento hacia arriba)
-      noiseFloorRef.current = Math.min(noiseFloorRef.current, smooth);
-      // Decaimiento lento hacia arriba para permitir adaptación al ruido que sube
-      noiseFloorRef.current = Math.max(noiseFloorRef.current, noiseFloorRef.current * 1.0005);
+      noiseFloorRef.current = Math.min(noiseFloorRef.current, smooth * 0.8);
+      // Decaimiento rápido hacia arriba para permitir mejor adaptación al ruido cambiante
+      noiseFloorRef.current = Math.max(noiseFloorRef.current, noiseFloorRef.current * 1.001);
 
-      const adaptiveThreshold = Math.max(baseVolumeThreshold, noiseFloorRef.current * adaptiveMultiplier + 0.005);
+      const adaptiveThreshold = Math.max(baseVolumeThreshold, noiseFloorRef.current * adaptiveMultiplier + 0.003);
+
+      // Detección mejorada con rechazo de ruidos ambientales:
+      // Energía + firma espectral + centroide + flatness + ZCR + relación energía
+      // Ignora: instrumentales | viento | respiración | ruido blanco | plosivas
+      const isVoiceDetected = 
+        (smooth > adaptiveThreshold || rms > peakVoiceThreshold) &&
+        (voiceSignature || formantRatio > formantRatioThreshold) &&
+        isSpectralInVoiceRange &&
+        isNotWindNoise &&
+        isNotVoiceNoise &&
+        isNotWindRespiration;
 
       // Mantener conteo de frames activos/silenciosos para evitar disparos por transitorios
-      if (smooth > adaptiveThreshold) {
+      if (isVoiceDetected) {
         activeFramesRef.current += 1;
         silentFramesRef.current = 0;
+
+        // Limpiar timeout de silencio si hay actividad
+        if (silenceTimerRef.current) {
+          window.clearTimeout(silenceTimerRef.current);
+          silenceTimerRef.current = null;
+        }
 
         if (activeFramesRef.current >= activeHoldCount) {
           if (!listening) {
@@ -417,8 +517,14 @@ const TranslationTextField = () => {
         activeFramesRef.current = 0;
 
         if (silentFramesRef.current >= silenceHoldCount) {
-          if (listening) {
-            SpeechRecognition.stopListening().catch(()=>{});
+          // Iniciar timeout de silencio adicional para confirmación de pausa extendida
+          if (!silenceTimerRef.current && listening) {
+            silenceTimerRef.current = window.setTimeout(() => {
+              if (listening) {
+                SpeechRecognition.stopListening().catch(()=>{});
+              }
+              silenceTimerRef.current = null;
+            }, silenceTimeout);
           }
         }
       }
