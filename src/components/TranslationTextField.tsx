@@ -6,6 +6,7 @@ import { useSpeechSynthesis } from "react-speech-kit";
 import { useSearchParams } from "react-router-dom";
 import MicIcon from "assets/MicIcon";
 import PauseIcon from "assets/PauseIcon";
+import PlayIcon from "assets/PlayIcon";
 import SpeakerIcon from "assets/SpeakerIcon";
 import { DEFAULT_SOURCE_LANGUAGE } from "utils/constants";
 
@@ -154,6 +155,14 @@ const TranslationTextField = () => {
   const voicesInitialized = React.useRef(false);
   const manualEditRef = React.useRef<boolean>(false);
   const manualEditTimeoutRef = React.useRef<number | null>(null);
+  const [keepMicOn, setKeepMicOn] = React.useState<boolean>(() => {
+    try {
+      return localStorage.getItem("keepMicOn") === "true";
+    } catch (e) {
+      return false;
+    }
+  });
+  const keepMicOnRef = React.useRef<boolean>(keepMicOn);
 
   // VAD (Voice Activity Detection) settings - OPTIMIZED FOR VOICE IN MUSIC & NOISE REJECTION
   // Detección: voces en canciones, susurros, gritos | Ignora: viento, respiración, ruido blanco
@@ -250,7 +259,8 @@ const TranslationTextField = () => {
       SpeechRecognition.abortListening(); // Forzar el cese inmediato de la escucha
     }
     cancel();
-    await cleanupAudioProcessing();
+    // Solo limpiar recursos si el usuario NO quiere mantener el micrófono encendido
+    if (!keepMicOnRef.current) await cleanupAudioProcessing();
   };
 
   const handleChangeText = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -279,7 +289,7 @@ const TranslationTextField = () => {
       setIsProcessing(true);
       if (listening) {
         await SpeechRecognition.stopListening();
-        await cleanupAudioProcessing();
+        if (!keepMicOnRef.current) await cleanupAudioProcessing();
       } else {
         if (!isMicrophoneAvailable) {
           alert("Por favor permite acceso al micrófono");
@@ -345,34 +355,54 @@ const TranslationTextField = () => {
 
   const cleanupAudioProcessing = async () => {
     try {
-      if (vadIntervalRef.current) {
-        window.clearInterval(vadIntervalRef.current);
-        vadIntervalRef.current = null;
-      }
+      // Si el usuario quiere mantener el micrófono encendido, no cerramos los recursos
+      const shouldClose = !keepMicOnRef.current;
 
-      // Limpiar timeout de silencio
-      if (silenceTimerRef.current) {
-        window.clearTimeout(silenceTimerRef.current);
-        silenceTimerRef.current = null;
-      }
+      if (shouldClose) {
+        if (vadIntervalRef.current) {
+          window.clearInterval(vadIntervalRef.current);
+          vadIntervalRef.current = null;
+        }
 
-      // Reset VAD counters
-      activeFramesRef.current = 0;
-      silentFramesRef.current = 0;
+        // Limpiar timeout de silencio
+        if (silenceTimerRef.current) {
+          window.clearTimeout(silenceTimerRef.current);
+          silenceTimerRef.current = null;
+        }
+
+        // Reset VAD counters
+        activeFramesRef.current = 0;
+        silentFramesRef.current = 0;
+      }
 
       if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach(t => t.stop());
-        mediaStreamRef.current = null;
+        if (shouldClose) {
+          mediaStreamRef.current.getTracks().forEach(t => t.stop());
+          mediaStreamRef.current = null;
+        }
       }
 
       if (audioContextRef.current) {
-        try { await audioContextRef.current.close(); } catch(e){}
-        audioContextRef.current = null;
+        if (shouldClose) {
+          try { await audioContextRef.current.close(); } catch(e){}
+          audioContextRef.current = null;
+        }
       }
 
-      analyserRef.current = null;
+      if (shouldClose) analyserRef.current = null;
     } catch (err) {
       console.warn('Error during cleanupAudioProcessing', err);
+    }
+  };
+
+  // Asegura que la captura de audio esté activa (sin iniciar el reconocimiento)
+  const ensureAudioStreamActive = async () => {
+    try {
+      if (!mediaStreamRef.current) {
+        await setupAudioProcessing(selectedDeviceId);
+      }
+    } catch (e) {
+      console.warn('No se pudo activar captura de audio:', e);
     }
   };
 
@@ -508,25 +538,25 @@ const TranslationTextField = () => {
         }
 
         if (activeFramesRef.current >= activeHoldCount) {
-          if (!listening) {
-            SpeechRecognition.startListening({ continuous: true, interimResults: true, language: sl }).catch(()=>{});
-          }
+          // Nota: no iniciamos la grabación automáticamente por VAD.
+          // La app solo debe grabar cuando el usuario pulse el icono del micrófono.
         }
       } else {
         silentFramesRef.current += 1;
         activeFramesRef.current = 0;
 
         if (silentFramesRef.current >= silenceHoldCount) {
-          // Iniciar timeout de silencio adicional para confirmación de pausa extendida
-          if (!silenceTimerRef.current && listening) {
-            silenceTimerRef.current = window.setTimeout(() => {
-              if (listening) {
-                SpeechRecognition.stopListening().catch(()=>{});
-              }
-              silenceTimerRef.current = null;
-            }, silenceTimeout);
+            // Iniciar timeout de silencio adicional para confirmación de pausa extendida
+            if (!silenceTimerRef.current && listening) {
+              silenceTimerRef.current = window.setTimeout(() => {
+                // Si el usuario activó "keepMicOn", no detener la escucha automáticamente
+                if (listening && !keepMicOnRef.current) {
+                  SpeechRecognition.stopListening().catch(()=>{});
+                }
+                silenceTimerRef.current = null;
+              }, silenceTimeout);
+            }
           }
-        }
       }
     }, vadCheckInterval);
   };
@@ -603,6 +633,27 @@ const TranslationTextField = () => {
     }
   }, [listening]);
 
+  // Mantener referencia y persistencia para el toggle keepMicOn
+  React.useEffect(() => {
+    keepMicOnRef.current = keepMicOn;
+    try {
+      localStorage.setItem("keepMicOn", keepMicOn ? "true" : "false");
+    } catch (e) {}
+
+    // Si se activa el toggle, mantener la captura activa (no necesariamente iniciar reconocimiento)
+    if (keepMicOn) {
+      if (browserSupportsSpeechRecognition && isMicrophoneAvailable) {
+        ensureAudioStreamActive();
+      }
+    } else {
+      // Si se desactiva, detener la escucha y forzar el cierre de recursos
+      if (listening) {
+        SpeechRecognition.stopListening().catch(()=>{});
+      }
+      cleanupAudioProcessing();
+    }
+  }, [keepMicOn]);
+
   return (
     <Container $hasText={!!text}>
       <GlobalStyle />
@@ -646,13 +697,27 @@ const TranslationTextField = () => {
       </div>
       <Actions>
         {browserSupportsSpeechRecognition ? (
-          <button 
-            onClick={handleSpeech}
-            disabled={!isMicrophoneAvailable || isProcessing}
-            aria-label={listening ? "Detener reconocimiento" : "Iniciar reconocimiento"}
-          >
-            {listening ? <PauseIcon /> : <MicIcon />}
-          </button>
+          <>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                id="keepMic"
+                type="checkbox"
+                checked={keepMicOn}
+                onChange={(e) => setKeepMicOn(e.target.checked)}
+                aria-label="Mantener micrófono encendido"
+              />
+              <span style={{ color: '#bbb', fontSize: 12 }}>Mantener micrófono</span>
+            </label>
+            <button 
+              onMouseDown={() => { if (!mediaStreamRef.current) ensureAudioStreamActive(); }}
+              onTouchStart={() => { if (!mediaStreamRef.current) ensureAudioStreamActive(); }}
+              onClick={handleSpeech}
+              disabled={isProcessing || (!isMicrophoneAvailable && !keepMicOn)}
+              aria-label={listening ? "Detener reconocimiento" : "Iniciar reconocimiento"}
+            >
+              {listening ? <PauseIcon /> : (keepMicOn ? <MicIcon /> : <PlayIcon />)}
+            </button>
+          </>
         ) : (
           <p>Reconocimiento de voz no soportado</p>
         )}
